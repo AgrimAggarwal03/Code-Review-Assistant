@@ -19,7 +19,11 @@ if st.button("Review my code", type="primary"):
         try:
             result = run_pipeline(code, language, error_message or "none")
         except Exception as e:
-            st.error(f"Something went wrong: {e}")
+            msg = str(e)
+            if any(k in msg for k in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+                st.error("The AI service is busy right now. Please wait about 30 seconds and click Review again.")
+            else:
+                st.error(f"Something went wrong: {msg}")
             st.stop()
 
     if result["status"] == "rejected":

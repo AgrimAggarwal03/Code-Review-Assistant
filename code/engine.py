@@ -1,7 +1,9 @@
 """Shared logic for the Code Review Assistant: prompt loading, Gemini calls, 2-step pipeline."""
 import json
 import os
+import random
 import re
+import time
 from pathlib import Path
 
 from google import genai
@@ -64,17 +66,28 @@ def _call_once(model, system, user, temperature):
     return resp.text or ""
 
 
-def call_llm(system, user, temperature=0.2):
-    """Call the first available model from MODELS."""
+BUSY_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "INTERNAL", "DEADLINE")
+
+
+def call_llm(system, user, temperature=0.2, attempts=3):
+    """Call Gemini. Retry busy/overloaded errors with short waits (about 2s, then 4s),
+    and move to the next model in MODELS if one is missing (404) or stays busy."""
     last_err = None
     for model in MODELS:
-        try:
-            return _call_once(model, system, user, temperature)
-        except Exception as e:
-            if "NOT_FOUND" in str(e) or "404" in str(e):
+        for i in range(attempts):
+            try:
+                return _call_once(model, system, user, temperature)
+            except Exception as e:
                 last_err = e
-                continue
-            raise
+                msg = str(e)
+                if "NOT_FOUND" in msg or "404" in msg:
+                    break  # model not available: try the next model
+                if any(k in msg for k in BUSY_MARKERS):
+                    if i < attempts - 1:
+                        time.sleep(2 * (i + 1) + random.random())
+                        continue
+                    break  # still busy after retries: try the next model
+                raise  # any other error (bad key, bad request): show it
     raise last_err
 
 
