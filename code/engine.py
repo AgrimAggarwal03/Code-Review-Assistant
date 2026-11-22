@@ -9,7 +9,10 @@ from google.genai import types
 
 ROOT = Path(__file__).resolve().parent.parent
 PROMPT_DIR = ROOT / "prompts"
-MODEL = os.environ.get("REVIEW_MODEL", "gemini-2.5-flash")
+# Tried in order; a model that returns 404 NOT_FOUND (retired or unavailable) is skipped.
+# Override the first choice with the REVIEW_MODEL environment variable.
+MODELS = [m for m in (os.environ.get("REVIEW_MODEL"), "gemini-3.8-flash", "gemini-flash-latest") if m]
+MODEL = MODELS[0]
 
 
 def get_api_key():
@@ -44,13 +47,13 @@ def parse_json(text):
     return json.loads(text)
 
 
-def call_llm(system, user, temperature=0.2):
+def _call_once(model, system, user, temperature):
     key = get_api_key()
     if not key:
         raise RuntimeError("GEMINI_API_KEY is not set. See README.md.")
     client = genai.Client(api_key=key)
     resp = client.models.generate_content(
-        model=MODEL,
+        model=model,
         contents=user,
         config=types.GenerateContentConfig(
             system_instruction=system,
@@ -59,6 +62,20 @@ def call_llm(system, user, temperature=0.2):
         ),
     )
     return resp.text or ""
+
+
+def call_llm(system, user, temperature=0.2):
+    """Call the first available model from MODELS."""
+    last_err = None
+    for model in MODELS:
+        try:
+            return _call_once(model, system, user, temperature)
+        except Exception as e:
+            if "NOT_FOUND" in str(e) or "404" in str(e):
+                last_err = e
+                continue
+            raise
+    raise last_err
 
 
 def call_json(system, user, temperature=0.2, retries=1):
