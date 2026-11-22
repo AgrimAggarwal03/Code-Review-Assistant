@@ -4,10 +4,10 @@ Return ONLY valid JSON, with no markdown fences and no extra text.
 
 ### USER
 Review this beginner's {language} code.
-
 Optional error message from the student: {error_message}
 
 Student code:
+
 <<<
 {code}
 >>>
