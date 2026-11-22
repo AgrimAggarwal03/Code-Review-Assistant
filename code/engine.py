@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROMPT_DIR = ROOT / "prompts"
 # Tried in order; a model that returns 404 NOT_FOUND (retired or unavailable) is skipped.
 # Override the first choice with the REVIEW_MODEL environment variable.
-MODELS = [m for m in (os.environ.get("REVIEW_MODEL"), "gemini-3.8-flash", "gemini-flash-latest") if m]
+MODELS = [m for m in (os.environ.get("REVIEW_MODEL"), "gemini-3.8-flash") if m]
 MODEL = MODELS[0]
 
 
@@ -69,26 +69,61 @@ def _call_once(model, system, user, temperature):
 BUSY_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "INTERNAL", "DEADLINE")
 
 
+SKIP_WORDS = ("image", "tts", "live", "embedding", "audio", "robotics", "computer-use")
+
+
+def discover_models(exclude):
+    """Ask the API which Gemini Flash models THIS key can really use (no guessed names)."""
+    try:
+        client = genai.Client(api_key=get_api_key())
+        names = []
+        for m in client.models.list():
+            n = (m.name or "").replace("models/", "")
+            actions = getattr(m, "supported_actions", None)
+            ok_action = actions is None or "generateContent" in actions
+            if n.startswith("gemini") and "flash" in n and ok_action and n not in exclude \
+                    and not any(w in n for w in SKIP_WORDS):
+                names.append(n)
+        return sorted(names, reverse=True)[:3]
+    except Exception:
+        return []
+
+
 def call_llm(system, user, temperature=0.2, attempts=3):
-    """Call Gemini. Retry busy/overloaded errors with short waits (about 2s, then 4s),
-    and move to the next model in MODELS if one is missing (404) or stays busy."""
-    last_err = None
-    for model in MODELS:
-        for i in range(attempts):
+    """Call Gemini. Busy/overloaded errors are retried with short waits (about 2s, then 4s).
+    If a model is missing (404) or stays busy, other Flash models the key can use are tried.
+    If everything fails, the most useful error is raised (busy errors first)."""
+    errors = {"busy": None, "last": None}
+
+    def try_model(model, tries):
+        for i in range(tries):
             try:
-                return _call_once(model, system, user, temperature)
+                return True, _call_once(model, system, user, temperature)
             except Exception as e:
-                last_err = e
+                errors["last"] = e
                 msg = str(e)
                 if "NOT_FOUND" in msg or "404" in msg:
-                    break  # model not available: try the next model
+                    return False, None  # model not available to this key
                 if any(k in msg for k in BUSY_MARKERS):
-                    if i < attempts - 1:
+                    errors["busy"] = errors["busy"] or e
+                    if i < tries - 1:
                         time.sleep(2 * (i + 1) + random.random())
                         continue
-                    break  # still busy after retries: try the next model
+                    return False, None  # still busy after retries
                 raise  # any other error (bad key, bad request): show it
-    raise last_err
+        return False, None
+
+    tried = []
+    for model in MODELS:
+        tried.append(model)
+        ok, out = try_model(model, attempts)
+        if ok:
+            return out
+    for model in discover_models(tried):
+        ok, out = try_model(model, 2)
+        if ok:
+            return out
+    raise errors["busy"] or errors["last"]
 
 
 def call_json(system, user, temperature=0.2, retries=1):
